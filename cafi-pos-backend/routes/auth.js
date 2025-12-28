@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const sheets = require('../services/sheets');
-const CONFIG = require('../config');
+const appsheet = require('../services/appsheet');
 
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    const usuarios = await sheets.getData(CONFIG.HOJAS.USUARIOS);
+    // Buscar en AppSheet tabla Usuarios
+    const usuarios = await appsheet.find('Usuarios', '');
+    
     const usuario = usuarios.find(u => 
       String(u.UsuarioEmail || '').toLowerCase().trim() === String(email || '').toLowerCase().trim()
     );
@@ -16,13 +17,22 @@ router.post('/login', async (req, res) => {
     
     const passDB = String(usuario.Contraseña || usuario.Password || '');
     if (passDB !== String(password || '')) return res.json({ success: false, error: 'Contraseña incorrecta' });
-    if (!sheets.esActivo(usuario.Activo)) return res.json({ success: false, error: 'Usuario inactivo' });
     
-    const empresas = await sheets.getData(CONFIG.HOJAS.EMPRESAS);
-    const sucursales = await sheets.getData(CONFIG.HOJAS.SUCURSALES);
+    const activo = String(usuario.Activo || '').toUpperCase();
+    if (activo !== 'Y' && activo !== 'TRUE' && activo !== '1') {
+      return res.json({ success: false, error: 'Usuario inactivo' });
+    }
     
-    const empresa = empresas.find(e => sheets.compararID(e.EmpresaID, usuario.EmpresaID));
-    const sucursal = sucursales.find(s => sheets.compararID(s.SucursalID, usuario.SucursalID));
+    // Buscar empresa y sucursal
+    const empresas = await appsheet.find('Empresas', '');
+    const sucursales = await appsheet.find('Sucursales', '');
+    
+    const empresa = empresas.find(e => 
+      String(e.EmpresaID || '').toLowerCase() === String(usuario.EmpresaID || '').toLowerCase()
+    );
+    const sucursal = sucursales.find(s => 
+      String(s.SucursalID || '').toLowerCase() === String(usuario.SucursalID || '').toLowerCase()
+    );
     
     res.json({
       success: true,
