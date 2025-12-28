@@ -169,6 +169,116 @@ router.get('/resumen/:turnoID/:empresaID/:sucursalID/:usuarioEmail', async (req,
       }
       descuentos += parseFloat(v.Descuentos) || 0;
     });
+
+    // Calcular resumen turno (POST)
+router.post('/resumen', async (req, res) => {
+  try {
+    const { turnoID, empresaID, sucursalID, usuarioEmail } = req.body;
+    
+    const turnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, `Id="${turnoID}"`);
+    if (turnos.length === 0) {
+      return res.json({ success: false, error: 'Turno no encontrado' });
+    }
+    
+    const turno = turnos[0];
+    const horaInicio = turno.HoraInicio;
+    const saldoInicial = parseFloat(turno.SaldoInicial) || 0;
+    
+    // Métodos de pago
+    let metodosPago = [];
+    try {
+      metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, `EmpresaID="${empresaID}"`);
+    } catch { metodosPago = []; }
+    
+    const metodoMap = {};
+    metodosPago.forEach(m => { metodoMap[m.MetodoPagoID] = (m.Nombre || '').toLowerCase(); });
+    
+    // Ventas
+    let ventas = [];
+    try {
+      const todas = await appsheet.find(CONFIG.TABLAS.VENTAS, '');
+      ventas = todas.filter(v => {
+        const matchEmpresa = String(v.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
+        const matchSucursal = String(v.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
+        const matchUsuario = String(v.UsuarioEmail || '').toLowerCase() === usuarioEmail.toLowerCase();
+        const matchEstatus = (v.Estatus || '').toUpperCase() !== 'EN_ESPERA';
+        return matchEmpresa && matchSucursal && matchUsuario && matchEstatus;
+      });
+    } catch { ventas = []; }
+    
+    let ventasTotales = 0, canceladas = 0, descuentos = 0, contado = 0, credito = 0;
+    
+    ventas.forEach(v => {
+      const total = parseFloat(v.Total) || 0;
+      const estatus = (v.Estatus || '').toUpperCase();
+      
+      if (estatus === 'CANCELADA') {
+        canceladas += total;
+      } else {
+        ventasTotales += total;
+        if (v.TipoVenta === 'CREDITO') credito += total;
+        else contado += total;
+      }
+      descuentos += parseFloat(v.Descuentos) || 0;
+    });
+    
+    // Pagos
+    let pagos = [];
+    try {
+      const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, '');
+      pagos = todosPagos.filter(p => String(p.EmpresaID || '').toLowerCase() === empresaID.toLowerCase());
+    } catch { pagos = []; }
+    
+    let efectivo = 0, tarjeta = 0, transferencia = 0, otros = 0;
+    
+    pagos.forEach(p => {
+      const monto = parseFloat(p.Monto) || 0;
+      const metodoID = p.MetodoPagoID || p.MetodoPago || '';
+      const nombreMetodo = metodoMap[metodoID] || metodoID.toLowerCase();
+      
+      if (nombreMetodo.includes('efectivo') || nombreMetodo.includes('cash')) efectivo += monto;
+      else if (nombreMetodo.includes('tarjeta') || nombreMetodo.includes('card')) tarjeta += monto;
+      else if (nombreMetodo.includes('transferencia') || nombreMetodo.includes('transfer')) transferencia += monto;
+      else otros += monto;
+    });
+    
+    // Movimientos
+    const movimientos = await getMovimientosTurno(turnoID);
+    let ingresos = 0, egresos = 0;
+    
+    movimientos.forEach(m => {
+      if (m.tipo === 'Ingreso') ingresos += m.monto;
+      else if (m.tipo === 'Egreso') egresos += m.monto;
+    });
+    
+    const efectivoEsperado = saldoInicial + efectivo + ingresos - egresos;
+    
+    res.json({
+      success: true,
+      resumen: {
+        turnoID,
+        horaInicio,
+        saldoInicial,
+        ventasTotales,
+        canceladas,
+        descuentos,
+        contado,
+        credito,
+        efectivo,
+        tarjeta,
+        transferencia,
+        ingresos,
+        egresos,
+        otros,
+        efectivoEsperado,
+        totalVentas: ventas.length,
+        movimientos
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
     
     // Pagos
     let pagos = [];
