@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,7 +10,46 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Rutas
+// ============================================
+// APPSHEET REQUEST FUNCTION
+// ============================================
+const APPSHEET_APP_ID = process.env.APPSHEET_APP_ID;
+const APPSHEET_API_KEY = process.env.APPSHEET_API_KEY;
+
+async function appsheetRequest(tableName, action, body = {}) {
+  const url = `https://api.appsheet.com/api/v2/apps/${APPSHEET_APP_ID}/tables/${tableName}/Action`;
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'ApplicationAccessKey': APPSHEET_API_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      Action: action,
+      Properties: {
+        Locale: 'es-MX',
+        Timezone: 'America/Mexico_City'
+      },
+      ...body
+    })
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AppSheet API error: ${response.status} - ${errorText}`);
+  }
+  
+  const data = await response.json();
+  return data;
+}
+
+// Exportar para usar en rutas
+module.exports.appsheetRequest = appsheetRequest;
+
+// ============================================
+// RUTAS
+// ============================================
 const authRoutes = require('./routes/auth');
 const productosRoutes = require('./routes/productos');
 const clientesRoutes = require('./routes/clientes');
@@ -25,9 +65,11 @@ app.use('/api/turnos', turnosRoutes);
 app.use('/api/catalogos', catalogosRoutes);
 
 // Health check
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-// Carga inicial POS
+// ============================================
+// CARGA INICIAL POS
+// ============================================
 app.get('/api/pos/cargar/:empresaID', async (req, res) => {
   try {
     const { empresaID } = req.params;
@@ -63,16 +105,14 @@ app.get('/api/pos/cargar/:empresaID', async (req, res) => {
       categorias: categorias || []
     });
   } catch (error) {
+    console.error('Error cargando datos POS:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`CAFI POS Backend corriendo en puerto ${PORT}`);
-});
-// ========== CATÁLOGOS ==========
-
-// GET Marcas por empresa
+// ============================================
+// CATÁLOGOS INDIVIDUALES
+// ============================================
 app.get('/api/catalogos/marcas/:empresaID', async (req, res) => {
   try {
     const { empresaID } = req.params;
@@ -85,7 +125,6 @@ app.get('/api/catalogos/marcas/:empresaID', async (req, res) => {
   }
 });
 
-// GET Categorias por empresa
 app.get('/api/catalogos/categorias/:empresaID', async (req, res) => {
   try {
     const { empresaID } = req.params;
@@ -96,4 +135,23 @@ app.get('/api/catalogos/categorias/:empresaID', async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+app.get('/api/catalogos/proveedores/:empresaID', async (req, res) => {
+  try {
+    const { empresaID } = req.params;
+    const response = await appsheetRequest('Proveedores', 'Find', {
+      Selector: `Filter(Proveedores, [EmpresaID] = "${empresaID}", [Activo] = "Y")`
+    });
+    res.json({ success: true, proveedores: response || [] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// INICIAR SERVIDOR
+// ============================================
+app.listen(PORT, () => {
+  console.log(`CAFI POS Backend corriendo en puerto ${PORT}`);
 });
