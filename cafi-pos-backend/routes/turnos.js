@@ -3,16 +3,18 @@ const router = express.Router();
 const appsheet = require('../services/appsheet');
 const CONFIG = require('../config');
 
-// Helper
-async function getMovimientosTurno(turnoID) {
+// Helper - Movimientos del turno (filtrados por fecha)
+async function getMovimientosTurno(turnoID, horaInicio, usuario) {
   try {
-    const turnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, `Id="${turnoID}"`);
-    if (turnos.length === 0) return [];
-    const turno = turnos[0];
-    const usuario = turno.Usuario;
     const movimientos = await appsheet.find(CONFIG.TABLAS.MOVIMIENTOS_CAJA, '');
+    const inicio = new Date(horaInicio);
+    
     return movimientos
-      .filter(m => String(m.Usuario || '').toLowerCase() === usuario.toLowerCase())
+      .filter(m => {
+        const matchUsuario = String(m.Usuario || '').toLowerCase() === usuario.toLowerCase();
+        const fechaMov = new Date(m.FechaRegistro || m.Fecha);
+        return matchUsuario && fechaMov >= inicio;
+      })
       .map(m => ({
         id: m.ID,
         tipo: m.Tipo,
@@ -37,7 +39,7 @@ router.get('/verificar/:empresaID/:sucursalID/:usuarioEmail', async (req, res) =
         String(t.EstadoActual || '').toLowerCase() === 'abierto';
     });
     if (turnoAbierto) {
-      const movimientos = await getMovimientosTurno(turnoAbierto.Id);
+      const movimientos = await getMovimientosTurno(turnoAbierto.Id, turnoAbierto.HoraInicio, turnoAbierto.Usuario);
       res.json({
         success: true, turnoAbierto: true,
         turno: { id: turnoAbierto.Id, horaInicio: turnoAbierto.HoraInicio, saldoInicial: parseFloat(turnoAbierto.SaldoInicial) || 0, usuario: turnoAbierto.Usuario },
@@ -82,14 +84,15 @@ router.post('/movimiento', async (req, res) => {
     const movID = appsheet.generarID('').substring(0, 8);
     const registro = {
       ID: movID, Tipo: data.tipo, Usuario: data.usuarioEmail, Categoria: data.categoria || '',
-      Concepto: data.concepto, Monto: parseFloat(data.monto) || 0, Observaciones: data.observaciones || ''
+      Concepto: data.concepto, Monto: parseFloat(data.monto) || 0, Observaciones: data.observaciones || '',
+      FechaRegistro: appsheet.fechaHoraActual()
     };
     await appsheet.add(CONFIG.TABLAS.MOVIMIENTOS_CAJA, registro);
     res.json({ success: true, movimientoID: movID, movimiento: registro });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// Resumen turno (POST)
+// Resumen turno (POST) - FILTRADO POR FECHA DEL TURNO
 router.post('/resumen', async (req, res) => {
   try {
     const { turnoID, empresaID, sucursalID, usuarioEmail } = req.body;
@@ -99,20 +102,30 @@ router.post('/resumen', async (req, res) => {
     const turno = turnos[0];
     const horaInicio = turno.HoraInicio;
     const saldoInicial = parseFloat(turno.SaldoInicial) || 0;
+    const fechaInicioTurno = new Date(horaInicio);
+    const ahora = new Date();
     
+    // Métodos de pago
     let metodosPago = [];
     try { metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, `EmpresaID="${empresaID}"`); } catch { metodosPago = []; }
     const metodoMap = {};
     metodosPago.forEach(m => { metodoMap[m.MetodoPagoID] = (m.Nombre || '').toLowerCase(); });
     
+    // Ventas - FILTRAR POR FECHA DEL TURNO
     let ventas = [];
     try {
       const todas = await appsheet.find(CONFIG.TABLAS.VENTAS, '');
       ventas = todas.filter(v => {
-        return String(v.EmpresaID || '').toLowerCase() === empresaID.toLowerCase() &&
-          String(v.SucursalID || '').toLowerCase() === sucursalID.toLowerCase() &&
-          String(v.UsuarioEmail || '').toLowerCase() === usuarioEmail.toLowerCase() &&
-          (v.Estatus || '').toUpperCase() !== 'EN_ESPERA';
+        const matchEmpresa = String(v.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
+        const matchSucursal = String(v.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
+        const matchUsuario = String(v.UsuarioEmail || '').toLowerCase() === usuarioEmail.toLowerCase();
+        const matchEstatus = (v.Estatus || '').toUpperCase() !== 'EN_ESPERA';
+        
+        // Filtrar por fecha del turno
+        const fechaVenta = new Date(v.FechaHora);
+        const dentroDelTurno = fechaVenta >= fechaInicioTurno && fechaVenta <= ahora;
+        
+        return matchEmpresa && matchSucursal && matchUsuario && matchEstatus && dentroDelTurno;
       });
     } catch { ventas = []; }
     
@@ -124,10 +137,20 @@ router.post('/resumen', async (req, res) => {
       descuentos += parseFloat(v.Descuentos) || 0;
     });
     
+    // Pagos/Abonos - FILTRAR POR FECHA DEL TURNO
     let pagos = [];
     try {
       const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, '');
-      pagos = todosPagos.filter(p => String(p.EmpresaID || '').toLowerCase() === empresaID.toLowerCase());
+      pagos = todosPagos.filter(p => {
+        const matchEmpresa = String(p.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
+        const matchUsuario = String(p.UsuarioEmail || '').toLowerCase() === usuarioEmail.toLowerCase();
+        
+        // Filtrar por fecha del turno
+        const fechaPago = new Date(p.FechaHora || p.Fecha);
+        const dentroDelTurno = fechaPago >= fechaInicioTurno && fechaPago <= ahora;
+        
+        return matchEmpresa && matchUsuario && dentroDelTurno;
+      });
     } catch { pagos = []; }
     
     let efectivo = 0, tarjeta = 0, transferencia = 0, otros = 0;
@@ -140,7 +163,8 @@ router.post('/resumen', async (req, res) => {
       else otros += monto;
     });
     
-    const movimientos = await getMovimientosTurno(turnoID);
+    // Movimientos - FILTRAR POR FECHA DEL TURNO
+    const movimientos = await getMovimientosTurno(turnoID, horaInicio, usuarioEmail);
     let ingresos = 0, egresos = 0;
     movimientos.forEach(m => { if (m.tipo === 'Ingreso') ingresos += m.monto; else if (m.tipo === 'Egreso') egresos += m.monto; });
     
@@ -148,7 +172,11 @@ router.post('/resumen', async (req, res) => {
     
     res.json({
       success: true,
-      resumen: { turnoID, horaInicio, saldoInicial, ventasTotales, canceladas, descuentos, contado, credito, efectivo, tarjeta, transferencia, ingresos, egresos, otros, efectivoEsperado, totalVentas: ventas.length, movimientos }
+      resumen: { 
+        turnoID, horaInicio, saldoInicial, ventasTotales, canceladas, descuentos, 
+        contado, credito, efectivo, tarjeta, transferencia, ingresos, egresos, otros, 
+        efectivoEsperado, totalVentas: ventas.length, movimientos 
+      }
     });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
@@ -161,20 +189,32 @@ router.post('/cerrar', async (req, res) => {
     if (turnos.length === 0) return res.json({ success: false, error: 'Turno no encontrado' });
     
     const turno = turnos[0];
+    const horaInicio = turno.HoraInicio;
     const saldoInicial = parseFloat(turno.SaldoInicial) || 0;
     const efectivoReal = parseFloat(data.efectivoReal) || 0;
     const horaCierre = appsheet.fechaHoraActual();
+    const fechaInicioTurno = new Date(horaInicio);
+    const ahora = new Date();
     
-    // Calcular resumen inline
+    // Métodos de pago
     let metodosPago = [];
     try { metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, `EmpresaID="${data.empresaID}"`); } catch {}
     const metodoMap = {};
     metodosPago.forEach(m => { metodoMap[m.MetodoPagoID] = (m.Nombre || '').toLowerCase(); });
     
+    // Ventas del turno
     let ventas = [];
     try {
       const todas = await appsheet.find(CONFIG.TABLAS.VENTAS, '');
-      ventas = todas.filter(v => String(v.EmpresaID || '').toLowerCase() === data.empresaID.toLowerCase() && String(v.SucursalID || '').toLowerCase() === data.sucursalID.toLowerCase() && String(v.UsuarioEmail || '').toLowerCase() === data.usuarioEmail.toLowerCase() && (v.Estatus || '').toUpperCase() !== 'EN_ESPERA');
+      ventas = todas.filter(v => {
+        const matchEmpresa = String(v.EmpresaID || '').toLowerCase() === data.empresaID.toLowerCase();
+        const matchSucursal = String(v.SucursalID || '').toLowerCase() === data.sucursalID.toLowerCase();
+        const matchUsuario = String(v.UsuarioEmail || '').toLowerCase() === data.usuarioEmail.toLowerCase();
+        const matchEstatus = (v.Estatus || '').toUpperCase() !== 'EN_ESPERA';
+        const fechaVenta = new Date(v.FechaHora);
+        const dentroDelTurno = fechaVenta >= fechaInicioTurno && fechaVenta <= ahora;
+        return matchEmpresa && matchSucursal && matchUsuario && matchEstatus && dentroDelTurno;
+      });
     } catch {}
     
     let ventasTotales = 0, canceladas = 0, descuentos = 0, contado = 0, credito = 0;
@@ -185,8 +225,17 @@ router.post('/cerrar', async (req, res) => {
       descuentos += parseFloat(v.Descuentos) || 0;
     });
     
+    // Pagos del turno
     let pagos = [];
-    try { const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, ''); pagos = todosPagos.filter(p => String(p.EmpresaID || '').toLowerCase() === data.empresaID.toLowerCase()); } catch {}
+    try { 
+      const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, ''); 
+      pagos = todosPagos.filter(p => {
+        const matchEmpresa = String(p.EmpresaID || '').toLowerCase() === data.empresaID.toLowerCase();
+        const matchUsuario = String(p.UsuarioEmail || '').toLowerCase() === data.usuarioEmail.toLowerCase();
+        const fechaPago = new Date(p.FechaHora || p.Fecha);
+        return matchEmpresa && matchUsuario && fechaPago >= fechaInicioTurno && fechaPago <= ahora;
+      });
+    } catch {}
     
     let efectivo = 0, tarjeta = 0, transferencia = 0, otros = 0;
     pagos.forEach(p => {
@@ -198,7 +247,8 @@ router.post('/cerrar', async (req, res) => {
       else otros += monto;
     });
     
-    const movimientos = await getMovimientosTurno(data.turnoID);
+    // Movimientos del turno
+    const movimientos = await getMovimientosTurno(data.turnoID, horaInicio, data.usuarioEmail);
     let ingresos = 0, egresos = 0;
     movimientos.forEach(m => { if (m.tipo === 'Ingreso') ingresos += m.monto; else if (m.tipo === 'Egreso') egresos += m.monto; });
     
