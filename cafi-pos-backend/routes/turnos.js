@@ -209,6 +209,11 @@ router.post('/resumen', async function(req, res) {
     var horaInicio = turno.HoraInicio;
     var saldoInicial = parseFloat(turno.SaldoInicial) || 0;
     var fechaInicioTurno = parsearFechaAppSheet(horaInicio);
+    // Agrega:
+console.log('>>> DEBUG FECHA INICIO <<<');
+console.log('horaInicio string:', horaInicio);
+console.log('fechaInicioTurno:', fechaInicioTurno);
+console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
     var ahora = new Date();
     
     console.log('=== FECHAS ===');
