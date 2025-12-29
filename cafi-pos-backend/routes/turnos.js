@@ -10,24 +10,34 @@ async function getMovimientosTurno(horaInicio, empresaID, sucursalID, usuarioEma
     const inicio = new Date(horaInicio);
     const ahora = new Date();
     
-    return movimientos
-      .filter(m => {
-        const matchEmpresa = String(m.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
-        const matchSucursal = String(m.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
-        const matchUsuario = String(m.Usuario || '').toLowerCase() === usuarioEmail.toLowerCase();
-        const fechaMov = new Date(m.FechaRegistro || m.Fecha);
-        const dentroDelTurno = fechaMov >= inicio && fechaMov <= ahora;
-        return matchEmpresa && matchSucursal && matchUsuario && dentroDelTurno;
-      })
-      .map(m => ({
-        id: m.ID,
-        tipo: m.Tipo,
-        categoria: m.Categoria,
-        concepto: m.Concepto,
-        monto: parseFloat(m.Monto) || 0,
-        fecha: m.FechaRegistro,
-        observaciones: m.Observaciones
-      }));
+    console.log('=== getMovimientosTurno ===');
+    console.log('horaInicio string:', horaInicio);
+    console.log('inicio Date:', inicio.toISOString());
+    console.log('ahora Date:', ahora.toISOString());
+    
+    const filtrados = movimientos.filter(m => {
+      const matchEmpresa = String(m.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
+      const matchSucursal = String(m.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
+      const matchUsuario = String(m.Usuario || '').toLowerCase() === usuarioEmail.toLowerCase();
+      const fechaMov = new Date(m.FechaRegistro || m.Fecha);
+      const dentroDelTurno = fechaMov >= inicio && fechaMov <= ahora;
+      
+      console.log(`Mov ${m.ID}: fecha=${m.FechaRegistro} parseada=${fechaMov.toISOString()} dentro=${dentroDelTurno}`);
+      
+      return matchEmpresa && matchSucursal && matchUsuario && dentroDelTurno;
+    });
+    
+    console.log('Movimientos filtrados:', filtrados.length);
+    
+    return filtrados.map(m => ({
+      id: m.ID,
+      tipo: m.Tipo,
+      categoria: m.Categoria,
+      concepto: m.Concepto,
+      monto: parseFloat(m.Monto) || 0,
+      fecha: m.FechaRegistro,
+      observaciones: m.Observaciones
+    }));
   } catch (e) { 
     console.error('Error getMovimientosTurno:', e);
     return []; 
@@ -89,12 +99,11 @@ router.post('/abrir', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// Movimiento caja - AHORA GUARDA EmpresaID y SucursalID
+// Movimiento caja
 router.post('/movimiento', async (req, res) => {
   try {
     const data = req.body;
     
-    // Obtener turno activo para sacar Empresa y Sucursal
     const todosTurnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, '');
     const turnoActivo = todosTurnos.find(t => {
       return String(t.Usuario || '').toLowerCase() === data.usuarioEmail.toLowerCase() &&
@@ -119,17 +128,17 @@ router.post('/movimiento', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// Resumen turno (POST) - FILTRADO COMPLETO POR FECHA, EMPRESA, SUCURSAL, USUARIO
+// Resumen turno (POST)
 router.post('/resumen', async (req, res) => {
   try {
     const { turnoID, empresaID, sucursalID, usuarioEmail } = req.body;
-      // LOG TEMPORAL - VER QUÉ LLEGA
+    
     console.log('=== RESUMEN RECIBIDO ===');
     console.log('turnoID:', turnoID);
     console.log('empresaID:', empresaID);
     console.log('sucursalID:', sucursalID);
     console.log('usuarioEmail:', usuarioEmail);
-    console.log('========================');
+    
     const turnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, `Id="${turnoID}"`);
     if (turnos.length === 0) return res.json({ success: false, error: 'Turno no encontrado' });
     
@@ -139,16 +148,25 @@ router.post('/resumen', async (req, res) => {
     const fechaInicioTurno = new Date(horaInicio);
     const ahora = new Date();
     
+    console.log('=== FECHAS TURNO ===');
+    console.log('horaInicio (string de AppSheet):', horaInicio);
+    console.log('fechaInicioTurno (parseada):', fechaInicioTurno.toISOString());
+    console.log('ahora:', ahora.toISOString());
+    console.log('saldoInicial:', saldoInicial);
+    
     // Métodos de pago
     let metodosPago = [];
     try { metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, `EmpresaID="${empresaID}"`); } catch { metodosPago = []; }
     const metodoMap = {};
     metodosPago.forEach(m => { metodoMap[m.MetodoPagoID] = (m.Nombre || '').toLowerCase(); });
     
-    // Ventas - FILTRAR POR FECHA + EMPRESA + SUCURSAL + USUARIO
+    // Ventas
     let ventas = [];
     try {
       const todas = await appsheet.find(CONFIG.TABLAS.VENTAS, '');
+      console.log('=== VENTAS ===');
+      console.log('Total ventas en BD:', todas.length);
+      
       ventas = todas.filter(v => {
         const matchEmpresa = String(v.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
         const matchSucursal = String(v.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
@@ -156,8 +174,14 @@ router.post('/resumen', async (req, res) => {
         const matchEstatus = (v.Estatus || '').toUpperCase() !== 'EN_ESPERA';
         const fechaVenta = new Date(v.FechaHora);
         const dentroDelTurno = fechaVenta >= fechaInicioTurno && fechaVenta <= ahora;
+        
+        if (matchEmpresa && matchSucursal && matchUsuario) {
+          console.log(`Venta ${v.VentaID}: fecha=${v.FechaHora} parseada=${fechaVenta.toISOString()} dentro=${dentroDelTurno} estatus=${v.Estatus}`);
+        }
+        
         return matchEmpresa && matchSucursal && matchUsuario && matchEstatus && dentroDelTurno;
       });
+      console.log('Ventas filtradas:', ventas.length);
     } catch { ventas = []; }
     
     let ventasTotales = 0, canceladas = 0, descuentos = 0, contado = 0, credito = 0;
@@ -168,36 +192,52 @@ router.post('/resumen', async (req, res) => {
       descuentos += parseFloat(v.Descuentos) || 0;
     });
     
-    // Pagos/Abonos - FILTRAR POR FECHA + EMPRESA + SUCURSAL + USUARIO
+    // Pagos/Abonos
     let pagos = [];
     try {
       const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, '');
+      console.log('=== ABONOS ===');
+      console.log('Total abonos en BD:', todosPagos.length);
+      
       pagos = todosPagos.filter(p => {
         const matchEmpresa = String(p.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
         const matchSucursal = String(p.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
         const matchUsuario = String(p.UsuarioEmail || '').toLowerCase() === usuarioEmail.toLowerCase();
         const fechaPago = new Date(p.FechaHora || p.Fecha);
         const dentroDelTurno = fechaPago >= fechaInicioTurno && fechaPago <= ahora;
+        
+        console.log(`Abono ${p.AbonoID}: fecha=${p.FechaHora} parseada=${fechaPago.toISOString()} Emp=${matchEmpresa} Suc=${matchSucursal} Usr=${matchUsuario} dentro=${dentroDelTurno}`);
+        
         return matchEmpresa && matchSucursal && matchUsuario && dentroDelTurno;
       });
+      console.log('Abonos filtrados:', pagos.length);
     } catch { pagos = []; }
     
     let efectivo = 0, tarjeta = 0, transferencia = 0, otros = 0;
     pagos.forEach(p => {
       const monto = parseFloat(p.Monto) || 0;
       const nombreMetodo = metodoMap[p.MetodoPagoID || p.MetodoPago || ''] || '';
+      console.log(`  -> Abono ${p.AbonoID}: $${monto} metodo=${nombreMetodo}`);
       if (nombreMetodo.includes('efectivo') || nombreMetodo.includes('cash')) efectivo += monto;
       else if (nombreMetodo.includes('tarjeta') || nombreMetodo.includes('card')) tarjeta += monto;
       else if (nombreMetodo.includes('transferencia') || nombreMetodo.includes('transfer')) transferencia += monto;
       else otros += monto;
     });
     
-    // Movimientos - FILTRAR POR FECHA + EMPRESA + SUCURSAL + USUARIO
+    // Movimientos
     const movimientos = await getMovimientosTurno(horaInicio, empresaID, sucursalID, usuarioEmail);
     let ingresos = 0, egresos = 0;
     movimientos.forEach(m => { if (m.tipo === 'Ingreso') ingresos += m.monto; else if (m.tipo === 'Egreso') egresos += m.monto; });
     
     const efectivoEsperado = saldoInicial + efectivo + ingresos - egresos;
+    
+    console.log('=== RESULTADO FINAL ===');
+    console.log('saldoInicial:', saldoInicial);
+    console.log('efectivo:', efectivo);
+    console.log('ingresos:', ingresos);
+    console.log('egresos:', egresos);
+    console.log('efectivoEsperado:', efectivoEsperado);
+    console.log('Formula:', saldoInicial, '+', efectivo, '+', ingresos, '-', egresos, '=', efectivoEsperado);
     
     res.json({
       success: true,
@@ -254,7 +294,7 @@ router.post('/cerrar', async (req, res) => {
       descuentos += parseFloat(v.Descuentos) || 0;
     });
     
-    // Pagos del turno - CON FILTRO DE SUCURSAL
+    // Pagos del turno
     let pagos = [];
     try { 
       const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, ''); 
@@ -277,7 +317,7 @@ router.post('/cerrar', async (req, res) => {
       else otros += monto;
     });
     
-    // Movimientos del turno - CON FILTROS COMPLETOS
+    // Movimientos del turno
     const movimientos = await getMovimientosTurno(horaInicio, data.empresaID, data.sucursalID, data.usuarioEmail);
     let ingresos = 0, egresos = 0;
     movimientos.forEach(m => { if (m.tipo === 'Ingreso') ingresos += m.monto; else if (m.tipo === 'Egreso') egresos += m.monto; });
