@@ -123,6 +123,13 @@ router.post('/movimiento', async (req, res) => {
 router.post('/resumen', async (req, res) => {
   try {
     const { turnoID, empresaID, sucursalID, usuarioEmail } = req.body;
+      // LOG TEMPORAL - VER QUÉ LLEGA
+    console.log('=== RESUMEN RECIBIDO ===');
+    console.log('turnoID:', turnoID);
+    console.log('empresaID:', empresaID);
+    console.log('sucursalID:', sucursalID);
+    console.log('usuarioEmail:', usuarioEmail);
+    console.log('========================');
     const turnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, `Id="${turnoID}"`);
     if (turnos.length === 0) return res.json({ success: false, error: 'Turno no encontrado' });
     
