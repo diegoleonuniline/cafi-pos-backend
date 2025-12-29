@@ -35,11 +35,6 @@ async function getMovimientosTurno(horaInicio, empresaID, sucursalID, usuarioEma
     var inicio = parsearFechaAppSheet(horaInicio);
     var ahora = new Date();
     
-    console.log('=== getMovimientosTurno ===');
-    console.log('horaInicio:', horaInicio);
-    console.log('inicio parseado:', inicio.toISOString());
-    console.log('ahora:', ahora.toISOString());
-    
     var filtrados = movimientos.filter(function(m) {
       var matchEmpresa = String(m.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
       var matchSucursal = String(m.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
@@ -47,14 +42,8 @@ async function getMovimientosTurno(horaInicio, empresaID, sucursalID, usuarioEma
       var fechaMov = parsearFechaAppSheet(m.FechaRegistro || m.Fecha);
       var dentroDelTurno = fechaMov >= inicio && fechaMov <= ahora;
       
-      if (matchEmpresa && matchSucursal && matchUsuario) {
-        console.log('Mov ' + m.ID + ': fecha=' + m.FechaRegistro + ' parseada=' + fechaMov.toISOString() + ' dentro=' + dentroDelTurno);
-      }
-      
       return matchEmpresa && matchSucursal && matchUsuario && dentroDelTurno;
     });
-    
-    console.log('Movimientos filtrados:', filtrados.length);
     
     return filtrados.map(function(m) {
       return {
@@ -193,38 +182,33 @@ router.post('/resumen', async function(req, res) {
     var sucursalID = req.body.sucursalID;
     var usuarioEmail = req.body.usuarioEmail;
     
-    console.log('========================================');
     console.log('=== RESUMEN TURNO ===');
     console.log('turnoID:', turnoID);
-    console.log('empresaID:', empresaID);
-    console.log('sucursalID:', sucursalID);
-    console.log('usuarioEmail:', usuarioEmail);
     
-    var turnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, 'Id="' + turnoID + '"');
-    if (turnos.length === 0) {
+    // BUSCAR TURNO MANUALMENTE (el filtro de AppSheet no funciona bien)
+    var todosTurnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, '');
+    var turno = todosTurnos.find(function(t) {
+      return t.Id === turnoID;
+    });
+    
+    if (!turno) {
       return res.json({ success: false, error: 'Turno no encontrado' });
     }
     
-    var turno = turnos[0];
+    console.log('Turno encontrado:', turno.Id, 'HoraInicio:', turno.HoraInicio);
+    
     var horaInicio = turno.HoraInicio;
     var saldoInicial = parseFloat(turno.SaldoInicial) || 0;
     var fechaInicioTurno = parsearFechaAppSheet(horaInicio);
-    // Agrega:
-console.log('>>> DEBUG FECHA INICIO <<<');
-console.log('horaInicio string:', horaInicio);
-console.log('fechaInicioTurno:', fechaInicioTurno);
-console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
     var ahora = new Date();
     
-    console.log('=== FECHAS ===');
-    console.log('horaInicio (string):', horaInicio);
-    console.log('fechaInicioTurno (parseada):', fechaInicioTurno.toISOString());
+    console.log('fechaInicioTurno:', fechaInicioTurno.toISOString());
     console.log('ahora:', ahora.toISOString());
     
     // Métodos de pago
     var metodosPago = [];
     try { 
-      metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, 'EmpresaID="' + empresaID + '"'); 
+      metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, ''); 
     } catch (e) { 
       metodosPago = []; 
     }
@@ -237,8 +221,6 @@ console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
     var ventas = [];
     try {
       var todas = await appsheet.find(CONFIG.TABLAS.VENTAS, '');
-      console.log('=== VENTAS ===');
-      console.log('Total en BD:', todas.length);
       
       ventas = todas.filter(function(v) {
         var matchEmpresa = String(v.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
@@ -248,15 +230,9 @@ console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
         var fechaVenta = parsearFechaAppSheet(v.FechaHora);
         var dentroDelTurno = fechaVenta >= fechaInicioTurno && fechaVenta <= ahora;
         
-        if (matchEmpresa && matchSucursal && matchUsuario) {
-          console.log('Venta ' + v.VentaID + ': fecha=' + v.FechaHora + ' dentro=' + dentroDelTurno);
-        }
-        
         return matchEmpresa && matchSucursal && matchUsuario && matchEstatus && dentroDelTurno;
       });
-      console.log('Ventas filtradas:', ventas.length);
     } catch (e) { 
-      console.error('Error ventas:', e);
       ventas = []; 
     }
     
@@ -277,8 +253,6 @@ console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
     var pagos = [];
     try {
       var todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, '');
-      console.log('=== ABONOS ===');
-      console.log('Total en BD:', todosPagos.length);
       
       pagos = todosPagos.filter(function(p) {
         var matchEmpresa = String(p.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
@@ -287,13 +261,9 @@ console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
         var fechaPago = parsearFechaAppSheet(p.FechaHora || p.Fecha);
         var dentroDelTurno = fechaPago >= fechaInicioTurno && fechaPago <= ahora;
         
-        console.log('Abono ' + p.AbonoID + ': fecha=' + p.FechaHora + ' dentro=' + dentroDelTurno);
-        
         return matchEmpresa && matchSucursal && matchUsuario && dentroDelTurno;
       });
-      console.log('Abonos filtrados:', pagos.length);
     } catch (e) { 
-      console.error('Error abonos:', e);
       pagos = []; 
     }
     
@@ -301,7 +271,6 @@ console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
     pagos.forEach(function(p) {
       var monto = parseFloat(p.Monto) || 0;
       var nombreMetodo = metodoMap[p.MetodoPagoID || p.MetodoPago || ''] || '';
-      console.log('  Abono ' + p.AbonoID + ': $' + monto + ' metodo=' + nombreMetodo);
       
       if (nombreMetodo.indexOf('efectivo') >= 0 || nombreMetodo.indexOf('cash') >= 0) efectivo += monto;
       else if (nombreMetodo.indexOf('tarjeta') >= 0 || nombreMetodo.indexOf('card') >= 0) tarjeta += monto;
@@ -319,15 +288,12 @@ console.log('fechaInicioTurno.getTime():', fechaInicioTurno.getTime());
     
     var efectivoEsperado = saldoInicial + efectivo + ingresos - egresos;
     
-    console.log('========================================');
     console.log('=== RESULTADO ===');
     console.log('saldoInicial:', saldoInicial);
     console.log('efectivo:', efectivo);
     console.log('ingresos:', ingresos);
     console.log('egresos:', egresos);
     console.log('EFECTIVO ESPERADO:', efectivoEsperado);
-    console.log('Formula:', saldoInicial + ' + ' + efectivo + ' + ' + ingresos + ' - ' + egresos + ' = ' + efectivoEsperado);
-    console.log('========================================');
     
     res.json({
       success: true,
@@ -365,12 +331,18 @@ router.post('/cerrar', async function(req, res) {
     console.log('=== CERRAR TURNO ===');
     console.log('turnoID:', data.turnoID);
     
-    var turnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, 'Id="' + data.turnoID + '"');
-    if (turnos.length === 0) {
+    // BUSCAR TURNO MANUALMENTE (el filtro de AppSheet no funciona bien)
+    var todosTurnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, '');
+    var turno = todosTurnos.find(function(t) {
+      return t.Id === data.turnoID;
+    });
+    
+    if (!turno) {
       return res.json({ success: false, error: 'Turno no encontrado' });
     }
     
-    var turno = turnos[0];
+    console.log('Turno encontrado:', turno.Id, 'HoraInicio:', turno.HoraInicio);
+    
     var horaInicio = turno.HoraInicio;
     var saldoInicial = parseFloat(turno.SaldoInicial) || 0;
     var efectivoReal = parseFloat(data.efectivoReal) || 0;
@@ -381,7 +353,7 @@ router.post('/cerrar', async function(req, res) {
     // Métodos de pago
     var metodosPago = [];
     try { 
-      metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, 'EmpresaID="' + data.empresaID + '"'); 
+      metodosPago = await appsheet.find(CONFIG.TABLAS.METODOS_PAGO, ''); 
     } catch (e) { 
       metodosPago = []; 
     }
@@ -456,7 +428,6 @@ router.post('/cerrar', async function(req, res) {
     
     console.log('efectivoEsperado:', efectivoEsperado);
     console.log('efectivoReal:', efectivoReal);
-    console.log('diferencia:', efectivoReal - efectivoEsperado);
     
     await appsheet.edit(CONFIG.TABLAS.ABRIR_TURNO, {
       Id: data.turnoID, 
