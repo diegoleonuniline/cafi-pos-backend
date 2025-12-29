@@ -37,13 +37,14 @@ router.post('/', async (req, res) => {
       });
     }
     
-    // Pagos
+    // Pagos - AHORA CON SucursalID
     if (data.pagos?.length > 0) {
       for (const pago of data.pagos.filter(p => p.monto > 0)) {
         await appsheet.add(CONFIG.TABLAS.ABONOS, {
           AbonoID: appsheet.generarID('ABO'),
           VentaID: ventaID,
           EmpresaID: data.empresaID,
+          SucursalID: data.sucursalID,
           MetodoPagoID: pago.metodoPagoID,
           Monto: pago.monto,
           UsuarioEmail: data.usuarioEmail
@@ -131,7 +132,6 @@ router.get('/espera/:empresaID/:sucursalID', async (req, res) => {
       return matchEmpresa && matchSucursal && matchEstatus;
     });
     
-    // Agregar items
     const todosDetalles = await appsheet.find(CONFIG.TABLAS.DETALLE_VENTA, '');
     const resultado = ventas.map(v => ({
       ...v,
@@ -305,7 +305,7 @@ router.put('/detalle/cancelar/:detalleID', async (req, res) => {
   }
 });
 
-// Agregar abono
+// Agregar abono - AHORA CON SucursalID
 router.post('/abono', async (req, res) => {
   try {
     const data = req.body;
@@ -313,10 +313,11 @@ router.post('/abono', async (req, res) => {
       AbonoID: appsheet.generarID('ABO'),
       VentaID: data.ventaID,
       EmpresaID: data.empresaID,
+      SucursalID: data.sucursalID,
       MetodoPagoID: data.metodoPagoID,
       Monto: data.monto,
       UsuarioEmail: data.usuarioEmail,
-      FechaHora: new Date().toISOString()
+      FechaHora: appsheet.fechaHoraActual()
     };
     
     await appsheet.add(CONFIG.TABLAS.ABONOS, abono);
