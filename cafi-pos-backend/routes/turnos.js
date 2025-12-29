@@ -3,17 +3,21 @@ const router = express.Router();
 const appsheet = require('../services/appsheet');
 const CONFIG = require('../config');
 
-// Helper - Movimientos del turno (filtrados por fecha)
-async function getMovimientosTurno(turnoID, horaInicio, usuario) {
+// Helper - Movimientos del turno (filtrados por fecha, empresa, sucursal, usuario)
+async function getMovimientosTurno(horaInicio, empresaID, sucursalID, usuarioEmail) {
   try {
     const movimientos = await appsheet.find(CONFIG.TABLAS.MOVIMIENTOS_CAJA, '');
     const inicio = new Date(horaInicio);
+    const ahora = new Date();
     
     return movimientos
       .filter(m => {
-        const matchUsuario = String(m.Usuario || '').toLowerCase() === usuario.toLowerCase();
+        const matchEmpresa = String(m.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
+        const matchSucursal = String(m.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
+        const matchUsuario = String(m.Usuario || '').toLowerCase() === usuarioEmail.toLowerCase();
         const fechaMov = new Date(m.FechaRegistro || m.Fecha);
-        return matchUsuario && fechaMov >= inicio;
+        const dentroDelTurno = fechaMov >= inicio && fechaMov <= ahora;
+        return matchEmpresa && matchSucursal && matchUsuario && dentroDelTurno;
       })
       .map(m => ({
         id: m.ID,
@@ -24,7 +28,10 @@ async function getMovimientosTurno(turnoID, horaInicio, usuario) {
         fecha: m.FechaRegistro,
         observaciones: m.Observaciones
       }));
-  } catch { return []; }
+  } catch (e) { 
+    console.error('Error getMovimientosTurno:', e);
+    return []; 
+  }
 }
 
 // Verificar turno abierto
@@ -39,10 +46,15 @@ router.get('/verificar/:empresaID/:sucursalID/:usuarioEmail', async (req, res) =
         String(t.EstadoActual || '').toLowerCase() === 'abierto';
     });
     if (turnoAbierto) {
-      const movimientos = await getMovimientosTurno(turnoAbierto.Id, turnoAbierto.HoraInicio, turnoAbierto.Usuario);
+      const movimientos = await getMovimientosTurno(turnoAbierto.HoraInicio, empresaID, sucursalID, usuarioEmail);
       res.json({
         success: true, turnoAbierto: true,
-        turno: { id: turnoAbierto.Id, horaInicio: turnoAbierto.HoraInicio, saldoInicial: parseFloat(turnoAbierto.SaldoInicial) || 0, usuario: turnoAbierto.Usuario },
+        turno: { 
+          id: turnoAbierto.Id, 
+          horaInicio: turnoAbierto.HoraInicio, 
+          saldoInicial: parseFloat(turnoAbierto.SaldoInicial) || 0, 
+          usuario: turnoAbierto.Usuario 
+        },
         movimientos
       });
     } else {
@@ -77,14 +89,29 @@ router.post('/abrir', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// Movimiento caja
+// Movimiento caja - AHORA GUARDA EmpresaID y SucursalID
 router.post('/movimiento', async (req, res) => {
   try {
     const data = req.body;
+    
+    // Obtener turno activo para sacar Empresa y Sucursal
+    const todosTurnos = await appsheet.find(CONFIG.TABLAS.ABRIR_TURNO, '');
+    const turnoActivo = todosTurnos.find(t => {
+      return String(t.Usuario || '').toLowerCase() === data.usuarioEmail.toLowerCase() &&
+        String(t.EstadoActual || '').toLowerCase() === 'abierto';
+    });
+    
     const movID = appsheet.generarID('').substring(0, 8);
     const registro = {
-      ID: movID, Tipo: data.tipo, Usuario: data.usuarioEmail, Categoria: data.categoria || '',
-      Concepto: data.concepto, Monto: parseFloat(data.monto) || 0, Observaciones: data.observaciones || '',
+      ID: movID, 
+      EmpresaID: turnoActivo?.Empresa || data.empresaID || '',
+      SucursalID: turnoActivo?.Sucursal || data.sucursalID || '',
+      Tipo: data.tipo, 
+      Usuario: data.usuarioEmail, 
+      Categoria: data.categoria || '',
+      Concepto: data.concepto, 
+      Monto: parseFloat(data.monto) || 0, 
+      Observaciones: data.observaciones || '',
       FechaRegistro: appsheet.fechaHoraActual()
     };
     await appsheet.add(CONFIG.TABLAS.MOVIMIENTOS_CAJA, registro);
@@ -92,7 +119,7 @@ router.post('/movimiento', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// Resumen turno (POST) - FILTRADO POR FECHA DEL TURNO
+// Resumen turno (POST) - FILTRADO COMPLETO POR FECHA, EMPRESA, SUCURSAL, USUARIO
 router.post('/resumen', async (req, res) => {
   try {
     const { turnoID, empresaID, sucursalID, usuarioEmail } = req.body;
@@ -111,7 +138,7 @@ router.post('/resumen', async (req, res) => {
     const metodoMap = {};
     metodosPago.forEach(m => { metodoMap[m.MetodoPagoID] = (m.Nombre || '').toLowerCase(); });
     
-    // Ventas - FILTRAR POR FECHA DEL TURNO
+    // Ventas - FILTRAR POR FECHA + EMPRESA + SUCURSAL + USUARIO
     let ventas = [];
     try {
       const todas = await appsheet.find(CONFIG.TABLAS.VENTAS, '');
@@ -120,11 +147,8 @@ router.post('/resumen', async (req, res) => {
         const matchSucursal = String(v.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
         const matchUsuario = String(v.UsuarioEmail || '').toLowerCase() === usuarioEmail.toLowerCase();
         const matchEstatus = (v.Estatus || '').toUpperCase() !== 'EN_ESPERA';
-        
-        // Filtrar por fecha del turno
         const fechaVenta = new Date(v.FechaHora);
         const dentroDelTurno = fechaVenta >= fechaInicioTurno && fechaVenta <= ahora;
-        
         return matchEmpresa && matchSucursal && matchUsuario && matchEstatus && dentroDelTurno;
       });
     } catch { ventas = []; }
@@ -137,19 +161,17 @@ router.post('/resumen', async (req, res) => {
       descuentos += parseFloat(v.Descuentos) || 0;
     });
     
-    // Pagos/Abonos - FILTRAR POR FECHA DEL TURNO
+    // Pagos/Abonos - FILTRAR POR FECHA + EMPRESA + SUCURSAL + USUARIO
     let pagos = [];
     try {
       const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, '');
       pagos = todosPagos.filter(p => {
         const matchEmpresa = String(p.EmpresaID || '').toLowerCase() === empresaID.toLowerCase();
+        const matchSucursal = String(p.SucursalID || '').toLowerCase() === sucursalID.toLowerCase();
         const matchUsuario = String(p.UsuarioEmail || '').toLowerCase() === usuarioEmail.toLowerCase();
-        
-        // Filtrar por fecha del turno
         const fechaPago = new Date(p.FechaHora || p.Fecha);
         const dentroDelTurno = fechaPago >= fechaInicioTurno && fechaPago <= ahora;
-        
-        return matchEmpresa && matchUsuario && dentroDelTurno;
+        return matchEmpresa && matchSucursal && matchUsuario && dentroDelTurno;
       });
     } catch { pagos = []; }
     
@@ -163,8 +185,8 @@ router.post('/resumen', async (req, res) => {
       else otros += monto;
     });
     
-    // Movimientos - FILTRAR POR FECHA DEL TURNO
-    const movimientos = await getMovimientosTurno(turnoID, horaInicio, usuarioEmail);
+    // Movimientos - FILTRAR POR FECHA + EMPRESA + SUCURSAL + USUARIO
+    const movimientos = await getMovimientosTurno(horaInicio, empresaID, sucursalID, usuarioEmail);
     let ingresos = 0, egresos = 0;
     movimientos.forEach(m => { if (m.tipo === 'Ingreso') ingresos += m.monto; else if (m.tipo === 'Egreso') egresos += m.monto; });
     
@@ -225,15 +247,16 @@ router.post('/cerrar', async (req, res) => {
       descuentos += parseFloat(v.Descuentos) || 0;
     });
     
-    // Pagos del turno
+    // Pagos del turno - CON FILTRO DE SUCURSAL
     let pagos = [];
     try { 
       const todosPagos = await appsheet.find(CONFIG.TABLAS.ABONOS, ''); 
       pagos = todosPagos.filter(p => {
         const matchEmpresa = String(p.EmpresaID || '').toLowerCase() === data.empresaID.toLowerCase();
+        const matchSucursal = String(p.SucursalID || '').toLowerCase() === data.sucursalID.toLowerCase();
         const matchUsuario = String(p.UsuarioEmail || '').toLowerCase() === data.usuarioEmail.toLowerCase();
         const fechaPago = new Date(p.FechaHora || p.Fecha);
-        return matchEmpresa && matchUsuario && fechaPago >= fechaInicioTurno && fechaPago <= ahora;
+        return matchEmpresa && matchSucursal && matchUsuario && fechaPago >= fechaInicioTurno && fechaPago <= ahora;
       });
     } catch {}
     
@@ -247,8 +270,8 @@ router.post('/cerrar', async (req, res) => {
       else otros += monto;
     });
     
-    // Movimientos del turno
-    const movimientos = await getMovimientosTurno(data.turnoID, horaInicio, data.usuarioEmail);
+    // Movimientos del turno - CON FILTROS COMPLETOS
+    const movimientos = await getMovimientosTurno(horaInicio, data.empresaID, data.sucursalID, data.usuarioEmail);
     let ingresos = 0, egresos = 0;
     movimientos.forEach(m => { if (m.tipo === 'Ingreso') ingresos += m.monto; else if (m.tipo === 'Egreso') egresos += m.monto; });
     
